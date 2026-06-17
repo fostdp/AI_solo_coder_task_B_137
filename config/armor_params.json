@@ -1,0 +1,67 @@
+{
+  "armors": {
+    "leather": {
+      "type": "leather",
+      "thickness": 0.008,
+      "density": 1000,
+      "yield_strength": 40000000,
+      "hardness": 150,
+      "name": "皮甲"
+    },
+    "chainmail": {
+      "type": "chainmail",
+      "thickness": 0.006,
+      "density": 7850,
+      "yield_strength": 250000000,
+      "hardness": 300,
+      "name": "锁子甲"
+    },
+    "plate": {
+      "type": "plate",
+      "thickness": 0.0025,
+      "density": 7850,
+      "yield_strength": 500000000,
+      "hardness": 450,
+      "name": "板甲"
+    }
+  },
+  "arrow_heads": {
+    "bodkin": {
+      "type": "bodkin",
+      "tip_diameter": 0.004,
+      "tip_area": 1.256e-5,
+      "tip_mass": 0.03,
+      "hardness": 550,
+      "name": "穿甲箭镞"
+    },
+    "broadhead": {
+      "type": "broadhead",
+      "tip_diameter": 0.03,
+      "tip_area": 7.068e-4,
+      "tip_mass": 0.05,
+      "hardness": 400,
+      "name": "宽刃箭镞"
+    },
+    "blunt": {
+      "type": "blunt",
+      "tip_diameter": 0.015,
+      "tip_area": 1.767e-4,
+      "tip_mass": 0.04,
+      "hardness": 300,
+      "name": "钝头箭镞"
+    }
+  },
+  "gyro": {
+    "yaw_stable_threshold": 4.0,
+    "yaw_moderate_threshold": 1.5,
+    "yaw_marginal_threshold": 1.0,
+    "stability_penalty_full": 2.0,
+    "stability_penalty_moderate": 1.0,
+    "stability_penalty_poor": 0.5,
+    "rotary_energy_boost_factor": 0.15,
+    "stability_clamp_min": 0.1,
+    "stability_clamp_max": 50.0,
+    "low_velocity_threshold": 1.0,
+    "low_velocity_stability": 10.0
+  }
+}

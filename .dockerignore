@@ -1,0 +1,42 @@
+**/.git
+**/.gitignore
+**/.vscode
+**/.idea
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+
+# Node & npm (如有)
+**/node_modules
+**/npm-debug.log*
+
+# 构建产物 & 临时数据
+**/data
+**/logs
+**/*.log
+
+# Go 构建 & 缓存
+**/backend/*.exe
+**/backend/ballistics-server
+**/backend/ballistics-server-upx
+
+# Python 虚拟环境
+**/.venv
+**/venv
+**/env
+
+# 操作系统
+**/.DS_Store
+**/Thumbs.db
+
+# 本地配置覆盖
+.env
+.env.*
+!.env.template
+
+# 本地 IDE
+**/*.swp
+**/*.swo
+**/dist
+**/build

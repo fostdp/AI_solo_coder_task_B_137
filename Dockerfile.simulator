@@ -1,0 +1,21 @@
+FROM python:3.11-slim-bookworm AS runtime
+
+LABEL org.opencontainers.image.title="sensor-simulator" \
+      org.opencontainers.image.description="三弓床弩传感器模拟器（UDP上报）"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /sim
+
+# stdlib-only (no deps required), keep image minimal
+RUN apt-get update && apt-get install -y --no-install-recommends tini=0.19.0-1 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY simulator/sensor_simulator.py  /sim/sensor_simulator.py
+
+RUN chmod +x /sim/sensor_simulator.py
+
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "/sim/sensor_simulator.py"]
+CMD []

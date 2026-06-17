@@ -345,7 +345,7 @@ func (s *Simulator) SolveElevationForDistance(distance, velocity, arrowMass, arr
 	bestResult := &models.SimulationResult{}
 	minError := 1e9
 
-	for angleDeg := 5.0; angleDeg <= 85.0; angleDeg += 0.5 {
+	runSim := func(angleDeg float64) (*models.SimulationResult, float64) {
 		params := &models.SimulationParams{
 			InitialVelocity: velocity,
 			LaunchAngle:     angleDeg,
@@ -358,14 +358,103 @@ func (s *Simulator) SolveElevationForDistance(distance, velocity, arrowMass, arr
 			DragCoefficient: s.def.DragCoefficient,
 		}
 		result := s.Simulate(params)
-		err := math.Abs(result.Range - distance)
+		return result, math.Abs(result.Range - distance)
+	}
+
+	for angleDeg := 2.0; angleDeg <= 88.0; angleDeg += 0.25 {
+		result, err := runSim(angleDeg)
 		if err < minError {
 			minError = err
 			bestAngle = angleDeg
 			bestResult = result
 		}
 	}
+
+	if minError > 0.5 {
+		refineStart := math.Max(2.0, bestAngle-1.0)
+		refineEnd := math.Min(88.0, bestAngle+1.0)
+		for angleDeg := refineStart; angleDeg <= refineEnd; angleDeg += 0.05 {
+			result, err := runSim(angleDeg)
+			if err < minError {
+				minError = err
+				bestAngle = angleDeg
+				bestResult = result
+			}
+		}
+	}
+
 	return bestAngle, bestResult
+}
+
+func (s *Simulator) simulateFlightWithWind(params *models.SimulationParams, targetDist, targetHeight, windX, windZ float64) (float64, float64, float64, float64, float64, float64) {
+	angleRad := params.LaunchAngle * math.Pi / 180.0
+	azimuthRad := params.AzimuthAngle * math.Pi / 180.0
+	v := params.InitialVelocity
+	vx := v * math.Cos(angleRad) * math.Cos(azimuthRad)
+	vy := v * math.Sin(angleRad)
+	vz := v * math.Cos(angleRad) * math.Sin(azimuthRad)
+	x, y, z := 0.0, 0.0, 0.0
+	maxHeight := 0.0
+	flightTime := 0.0
+	spinR := params.SpinRate
+	impactVx, impactVy, impactVz := 0.0, 0.0, 0.0
+
+	crossArea := math.Pi * math.Pow(params.ArrowDiameter/2.0, 2)
+	dragFactor := 0.5 * params.DragCoefficient * params.AirDensity * crossArea / params.ArrowMass
+
+	for t := 0.0; t < s.sim.MaxSimTime; t += s.sim.TimeStep {
+		speed := math.Sqrt(vx*vx + vy*vy + vz*vz)
+		if y < -targetHeight && t > 0.05 {
+			frac := (y + targetHeight) / (y - (y + s.sim.TimeStep*vy))
+			if math.IsNaN(frac) {
+				frac = 0.5
+			}
+			flightTime = t - frac*s.sim.TimeStep
+			x -= frac * s.sim.TimeStep * vx
+			y = -targetHeight
+			z -= frac * s.sim.TimeStep * vz
+			impactVx = vx
+			impactVy = vy
+			impactVz = vz
+			break
+		}
+		if t >= s.sim.MaxSimTime-s.sim.TimeStep {
+			flightTime = t
+			impactVx = vx
+			impactVy = vy
+			impactVz = vz
+		}
+		if y > maxHeight {
+			maxHeight = y
+		}
+		relVx := vx - windX
+		relVz := vz - windZ
+		relV := math.Sqrt(relVx*relVx + vy*vy + relVz*relVz)
+		if relV < 1e-6 {
+			relV = 1e-6
+		}
+		ax := -dragFactor * relV * relVx
+		ay := -s.sim.Gravity - dragFactor*relV*vy
+		az := -dragFactor * relV * relVz
+		if spinR > 0.1 && speed > 1 {
+			magnusF := s.aero.MagnusCoefficient * crossArea * params.AirDensity * spinR * speed / params.ArrowMass
+			perpendicularX := -vz / speed
+			perpendicularZ := vx / speed
+			ax += magnusF * perpendicularX
+			az += magnusF * perpendicularZ
+		}
+		spinR *= (1.0 - s.aero.SpinDecayRate*speed*s.sim.TimeStep)
+		vx += ax * s.sim.TimeStep
+		vy += ay * s.sim.TimeStep
+		vz += az * s.sim.TimeStep
+		x += vx * s.sim.TimeStep
+		y += vy * s.sim.TimeStep
+		z += vz * s.sim.TimeStep
+	}
+
+	horizontalRange := math.Sqrt(x*x + z*z)
+	impactSpeed := math.Sqrt(impactVx*impactVx + impactVy*impactVy + impactVz*impactVz)
+	return horizontalRange, y, z, flightTime, maxHeight, impactSpeed
 }
 
 func (s *Simulator) SolveElevationWithWind(distance, height, velocity, arrowMass, arrowDiameter, arrowLength, spinRate, windSpeed, windDirDeg float64) (float64, float64, *models.SimulationResult) {
@@ -378,93 +467,202 @@ func (s *Simulator) SolveElevationWithWind(distance, height, velocity, arrowMass
 	windX := windSpeed * math.Cos(windDirRad)
 	windZ := windSpeed * math.Sin(windDirRad)
 
-	for angleDeg := 5.0; angleDeg <= 85.0; angleDeg += 0.5 {
-		for aziDeg := -15.0; aziDeg <= 15.0; aziDeg += 0.5 {
-			params := &models.SimulationParams{
+	evaluate := func(angleDeg, aziDeg float64) float64 {
+		params := &models.SimulationParams{
+			InitialVelocity: velocity,
+			LaunchAngle:     angleDeg,
+			AzimuthAngle:    aziDeg,
+			ArrowMass:       arrowMass,
+			ArrowDiameter:   arrowDiameter,
+			ArrowLength:     arrowLength,
+			SpinRate:        spinRate,
+			AirDensity:      s.sim.AirDensitySea,
+			DragCoefficient: s.def.DragCoefficient,
+		}
+		range_, impactAlt, lateral, ft, mh, impVel := s.simulateFlightWithWind(params, distance, height, windX, windZ)
+		_ = impVel
+		distErr := math.Abs(range_ - distance)
+		altErr := math.Abs(impactAlt + height)
+		latErr := math.Abs(lateral)
+		score := distErr*1.0 + altErr*3.0 + latErr*1.5
+		if score < minError {
+			minError = score
+			bestAngle = angleDeg
+			bestAzimuth = aziDeg
+			ke := 0.5 * arrowMass * impVel * impVel
+			bestResult = &models.SimulationResult{
+				Timestamp:       time.Now(),
 				InitialVelocity: velocity,
 				LaunchAngle:     angleDeg,
-				AzimuthAngle:    aziDeg,
-				ArrowMass:       arrowMass,
-				ArrowDiameter:   arrowDiameter,
-				ArrowLength:     arrowLength,
-				SpinRate:        spinRate,
-				AirDensity:      s.sim.AirDensitySea,
-				DragCoefficient: s.def.DragCoefficient,
+				FlightTime:      ft,
+				MaxHeight:       mh,
+				Range:           range_,
+				ImpactVelocity:  impVel,
+				KineticEnergy:   ke,
+				ImpactSpinRate:  spinRoughDecay(spinRate, ft),
+				RangeError:      distErr,
+				HeightError:     altErr,
+				LateralError:    latErr,
+				DriftLateral:    lateral,
 			}
+		}
+		return score
+	}
 
-			angleRad := angleDeg * math.Pi / 180.0
-			azimuthRad := aziDeg * math.Pi / 180.0
-			vx := velocity * math.Cos(angleRad) * math.Cos(azimuthRad)
-			vy := velocity * math.Sin(angleRad)
-			vz := velocity * math.Cos(angleRad) * math.Sin(azimuthRad)
-			x, y, z := 0.0, 0.0, 0.0
-			maxHeight := 0.0
-			flightTime := 0.0
-			spinR := spinRate
+	aziHalfWind := 8.0 + windSpeed*1.5
+	if aziHalfWind < 3.0 {
+		aziHalfWind = 3.0
+	}
+	for angleDeg := 3.0; angleDeg <= 85.0; angleDeg += 0.25 {
+		for aziDeg := -aziHalfWind; aziDeg <= aziHalfWind; aziDeg += 0.25 {
+			evaluate(angleDeg, aziDeg)
+		}
+	}
 
-			crossArea := math.Pi * math.Pow(arrowDiameter/2.0, 2)
-			dragFactor := 0.5 * s.def.DragCoefficient * s.sim.AirDensitySea * crossArea / arrowMass
-
-			for t := 0.0; t < s.sim.MaxSimTime; t += s.sim.TimeStep {
-				v := math.Sqrt(vx*vx + vy*vy + vz*vz)
-				if y < -height && t > 0.05 {
-					flightTime = t
-					break
-				}
-				if y > maxHeight {
-					maxHeight = y
-				}
-				relVx := vx - windX
-				relVz := vz - windZ
-				relV := math.Sqrt(relVx*relVx + vy*vy + relVz*relVz)
-				ax := -dragFactor * relV * relVx
-				ay := -s.sim.Gravity - dragFactor*relV*vy
-				az := -dragFactor * relV * relVz
-				spinR *= (1.0 - s.aero.SpinDecayRate*v*s.sim.TimeStep)
-				vx += ax * s.sim.TimeStep
-				vy += ay * s.sim.TimeStep
-				vz += az * s.sim.TimeStep
-				x += vx * s.sim.TimeStep
-				y += vy * s.sim.TimeStep
-				z += vz * s.sim.TimeStep
-			}
-
-			range_ := math.Sqrt(x*x + z*z)
-			heightErr := math.Abs(y + height)
-			distErr := math.Abs(range_ - distance)
-			lateralErr := math.Abs(z)
-			totalErr := distErr*1.0 + heightErr*2.0 + lateralErr*1.5
-
-			if totalErr < minError {
-				minError = totalErr
-				bestAngle = angleDeg
-				bestAzimuth = aziDeg
-				impactVel := math.Sqrt(vx*vx + vy*vy + vz*vz)
-				bestResult = &models.SimulationResult{
-					Timestamp:       time.Now(),
-					InitialVelocity: velocity,
-					LaunchAngle:     angleDeg,
-					FlightTime:      flightTime,
-					MaxHeight:       maxHeight,
-					Range:           range_,
-					ImpactVelocity:  impactVel,
-					KineticEnergy:   0.5 * arrowMass * impactVel * impactVel,
-					ImpactSpinRate:  spinR,
-				}
+	if minError > 0.3 {
+		angleFrom := math.Max(3.0, bestAngle-0.6)
+		angleTo := math.Min(85.0, bestAngle+0.6)
+		aziFrom := bestAzimuth - 0.6
+		aziTo := bestAzimuth + 0.6
+		for angleDeg := angleFrom; angleDeg <= angleTo; angleDeg += 0.05 {
+			for aziDeg := aziFrom; aziDeg <= aziTo; aziDeg += 0.05 {
+				evaluate(angleDeg, aziDeg)
 			}
 		}
 	}
+
 	return bestAngle, bestAzimuth, bestResult
+}
+
+func (s *Simulator) RunSimWithWindDirect(params *models.SimulationParams, targetDist, targetHeight, windX, windZ float64) (float64, float64, float64, float64, float64, float64) {
+	return s.simulateFlightWithWind(params, targetDist, targetHeight, windX, windZ)
+}
+
+func spinRoughDecay(spinInit, t float64) float64 {
+	return spinInit * math.Exp(-0.02*t)
+}
+
+func (s *Simulator) sampleTrajectory(params *models.SimulationParams, originX, originY, azimuthDeg float64) []models.TrajectorySample {
+	samples := make([]models.TrajectorySample, 0, 64)
+	angleRad := params.LaunchAngle * math.Pi / 180.0
+	aziRad := azimuthDeg * math.Pi / 180.0
+	v := params.InitialVelocity
+	vx := v * math.Cos(angleRad) * math.Cos(aziRad)
+	vy := v * math.Sin(angleRad)
+	vz := v * math.Cos(angleRad) * math.Sin(aziRad)
+	x, y, z := 0.0, 0.0, 0.0
+
+	crossArea := math.Pi * math.Pow(params.ArrowDiameter/2.0, 2)
+	dragFactor := 0.5 * params.DragCoefficient * params.AirDensity * crossArea / params.ArrowMass
+
+	dt := 0.05
+	for t := 0.0; t < s.sim.MaxSimTime; t += dt {
+		if y < -50.0 && t > 0.1 {
+			break
+		}
+		speed := math.Sqrt(vx*vx + vy*vy + vz*vz)
+		if speed < 1e-6 {
+			break
+		}
+		ax := -dragFactor * speed * vx
+		ay := -s.sim.Gravity - dragFactor*speed*vy
+		az := -dragFactor * speed * vz
+		vx += ax * dt
+		vy += ay * dt
+		vz += az * dt
+		x += vx * dt
+		y += vy * dt
+		z += vz * dt
+		worldX := originX + x*math.Cos(aziRad) - z*math.Sin(aziRad)
+		worldY := originY + x*math.Sin(aziRad) + z*math.Cos(aziRad)
+		samples = append(samples, models.TrajectorySample{
+			TimeS: t,
+			X:     worldX,
+			Y:     worldY,
+			Z:     y,
+		})
+	}
+	return samples
+}
+
+func (s *Simulator) minTrajectoryDistance(a, b []models.TrajectorySample, delayA, delayB float64) (float64, float64) {
+	minDist := 1e9
+	timeAtMin := 0.0
+	lenA, lenB := len(a), len(b)
+	i, j := 0, 0
+	for i < lenA && j < lenB {
+		ta := a[i].TimeS + delayA
+		tb := b[j].TimeS + delayB
+		dt := ta - tb
+		if math.Abs(dt) < 0.051 {
+			dx := a[i].X - b[j].X
+			dy := a[i].Y - b[j].Y
+			dz := a[i].Z - b[j].Z
+			dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+			if dist < minDist {
+				minDist = dist
+				timeAtMin = math.Max(ta, tb)
+			}
+			i++
+			j++
+		} else if dt < 0 {
+			i++
+		} else {
+			j++
+		}
+	}
+	return minDist, timeAtMin
 }
 
 func (s *Simulator) OptimizeBarrage(req *models.BarrageOptimizationRequest, crossbowConfigs map[string]config.CrossbowTypeConfig) *models.BarrageOptimizationResponse {
 	shots := make([]models.BarrageShot, 0)
 	allImpactX := make([]float64, 0)
 	allImpactY := make([]float64, 0)
+	trajectories := make([][]models.TrajectorySample, 0)
+	shotMeta := make([]struct {
+		cbIndex int
+		shotIdx int
+	}, 0)
+
+	if len(req.Crossbows) == 0 {
+		defaultCB := models.BarrageCrossbow{
+			ID: "default-1", Type: "bed_crossbow_triple", Name: "三弓床弩#1",
+			X: -20, Y: -10, Heading: 0, Elevation: 35,
+		}
+		defaultCB2 := models.BarrageCrossbow{
+			ID: "default-2", Type: "bed_crossbow_triple", Name: "三弓床弩#2",
+			X: 0, Y: -10, Heading: 0, Elevation: 35,
+		}
+		defaultCB3 := models.BarrageCrossbow{
+			ID: "default-3", Type: "bed_crossbow_triple", Name: "三弓床弩#3",
+			X: 20, Y: -10, Heading: 0, Elevation: 35,
+		}
+		req.Crossbows = []models.BarrageCrossbow{defaultCB, defaultCB2, defaultCB3}
+	}
+	if req.MaxShotsPerCrossbow <= 0 {
+		req.MaxShotsPerCrossbow = 2
+	}
+	if req.SpreadAngle <= 0 {
+		req.SpreadAngle = 8.0
+	}
+	safetySeparation := req.SafetySeparationM
+	if safetySeparation <= 0 {
+		safetySeparation = 3.0
+	}
+	enableCA := req.EnableCollisionAvoidance
+	if !enableCA {
+		enableCA = true
+	}
+	delayBase := req.FireDelayBaseMs
+	if delayBase <= 0 {
+		delayBase = 120.0
+	}
+
 	var minArrival, maxArrival float64 = 1e9, 0
 	totalKE := 0.0
+	totalDelayMs := 0.0
 
-	for _, cb := range req.Crossbows {
+	for cbIndex, cb := range req.Crossbows {
 		cfg, ok := crossbowConfigs[cb.Type]
 		if !ok {
 			continue
@@ -509,7 +707,9 @@ func (s *Simulator) OptimizeBarrage(req *models.BarrageOptimizationRequest, cros
 			impactRange := sim.Range
 			impactX := cb.X + impactRange*math.Cos(aziRad)
 			impactY := cb.Y + impactRange*math.Sin(aziRad)
-			arrivalTime := sim.FlightTime
+
+			perShotDelay := delayBase * (float64(cbIndex)*0.7 + float64(i)*0.3)
+			arrivalTime := sim.FlightTime + perShotDelay/1000.0
 
 			if arrivalTime < minArrival {
 				minArrival = arrivalTime
@@ -518,6 +718,11 @@ func (s *Simulator) OptimizeBarrage(req *models.BarrageOptimizationRequest, cros
 				maxArrival = arrivalTime
 			}
 			totalKE += sim.KineticEnergy
+			totalDelayMs += perShotDelay
+
+			traj := s.sampleTrajectory(params, cb.X, cb.Y, azi)
+			trajectories = append(trajectories, traj)
+			shotMeta = append(shotMeta, struct{ cbIndex, shotIdx int }{cbIndex, i})
 
 			shots = append(shots, models.BarrageShot{
 				CrossbowID:      cb.ID,
@@ -530,9 +735,94 @@ func (s *Simulator) OptimizeBarrage(req *models.BarrageOptimizationRequest, cros
 				ImpactY:         impactY,
 				ArrivalTime:     arrivalTime,
 				InitialVelocity: cfg.TypicalVelocity,
+				FireDelayMs:     perShotDelay,
+				MinSeparationM:  9999.0,
+				CollisionRisk:   "low",
 			})
 			allImpactX = append(allImpactX, impactX)
 			allImpactY = append(allImpactY, impactY)
+		}
+	}
+
+	collisions := 0
+	warnings := 0
+	delaySec := make([]float64, len(shots))
+	for si := range shots {
+		delaySec[si] = shots[si].FireDelayMs / 1000.0
+	}
+
+	for i := 0; i < len(shots); i++ {
+		for j := i + 1; j < len(shots); j++ {
+			minDist, tAt := s.minTrajectoryDistance(trajectories[i], trajectories[j], delaySec[i], delaySec[j])
+			if minDist < shots[i].MinSeparationM {
+				shots[i].MinSeparationM = minDist
+			}
+			if minDist < shots[j].MinSeparationM {
+				shots[j].MinSeparationM = minDist
+			}
+			if minDist < 0.5 {
+				collisions++
+				shots[i].CollisionRisk = "critical"
+				shots[j].CollisionRisk = "critical"
+				shots[i].MinSeparationM = minDist
+				shots[j].MinSeparationM = minDist
+				_ = tAt
+			} else if minDist < safetySeparation {
+				warnings++
+				if shots[i].CollisionRisk != "critical" {
+					shots[i].CollisionRisk = "warning"
+				}
+				if shots[j].CollisionRisk != "critical" {
+					shots[j].CollisionRisk = "warning"
+				}
+			}
+		}
+	}
+
+	if collisions > 0 {
+		for si := range shots {
+			if shots[si].CollisionRisk == "critical" {
+				shots[si].FireDelayMs += delayBase * 0.8
+				delaySec[si] = shots[si].FireDelayMs / 1000.0
+				arrivalOld := shots[si].ArrivalTime
+				shots[si].ArrivalTime = shots[si].FlightTime + shots[si].FireDelayMs/1000.0
+				if shots[si].ArrivalTime > maxArrival {
+					maxArrival = shots[si].ArrivalTime
+				}
+				if shots[si].ArrivalTime < minArrival && arrivalOld == minArrival {
+					minArrival = shots[si].ArrivalTime
+				}
+			}
+		}
+		collisions = 0
+		warnings = 0
+		for i := 0; i < len(shots); i++ {
+			shots[i].MinSeparationM = 9999.0
+			shots[i].CollisionRisk = "low"
+		}
+		for i := 0; i < len(shots); i++ {
+			for j := i + 1; j < len(shots); j++ {
+				minDist, _ := s.minTrajectoryDistance(trajectories[i], trajectories[j], delaySec[i], delaySec[j])
+				if minDist < shots[i].MinSeparationM {
+					shots[i].MinSeparationM = minDist
+				}
+				if minDist < shots[j].MinSeparationM {
+					shots[j].MinSeparationM = minDist
+				}
+				if minDist < 0.5 {
+					collisions++
+					shots[i].CollisionRisk = "critical"
+					shots[j].CollisionRisk = "critical"
+				} else if minDist < safetySeparation {
+					warnings++
+					if shots[i].CollisionRisk != "critical" {
+						shots[i].CollisionRisk = "warning"
+					}
+					if shots[j].CollisionRisk != "critical" {
+						shots[j].CollisionRisk = "warning"
+					}
+				}
+			}
 		}
 	}
 
@@ -608,6 +898,10 @@ func (s *Simulator) OptimizeBarrage(req *models.BarrageOptimizationRequest, cros
 	if timeWindow < 0 {
 		timeWindow = 0
 	}
+	avgDelay := 0.0
+	if len(shots) > 0 {
+		avgDelay = totalDelayMs / float64(len(shots))
+	}
 
 	return &models.BarrageOptimizationResponse{
 		Shots: shots,
@@ -619,11 +913,14 @@ func (s *Simulator) OptimizeBarrage(req *models.BarrageOptimizationRequest, cros
 			CellSize: cellSize,
 			Grid:     grid,
 		},
-		TargetHitRate:  hitRate,
-		AreaCoveredM2:  areaCovered,
-		ShotsInTarget:  shotsInTarget,
-		TotalShots:     len(shots),
-		TimeWindow:     timeWindow,
-		KEConcentrated: totalKE,
+		TargetHitRate:      hitRate,
+		AreaCoveredM2:      areaCovered,
+		ShotsInTarget:      shotsInTarget,
+		TotalShots:         len(shots),
+		TimeWindow:         timeWindow,
+		KEConcentrated:     totalKE,
+		CollisionsDetected: collisions,
+		SeparationWarnings: warnings,
+		AvgFireDelayMs:     avgDelay,
 	}
 }

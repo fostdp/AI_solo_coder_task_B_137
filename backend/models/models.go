@@ -62,6 +62,10 @@ type SimulationResult struct {
 	ArmorType          string            `json:"armor_type"`
 	PenetrationDepth   float64           `json:"penetration_depth"`
 	PenetrationSuccess bool              `json:"penetration_success"`
+	RangeError         float64           `json:"range_error_m,omitempty"`
+	HeightError        float64           `json:"height_error_m,omitempty"`
+	LateralError       float64           `json:"lateral_error_m,omitempty"`
+	DriftLateral       float64           `json:"drift_lateral_m,omitempty"`
 }
 
 type ArmorParams struct {
@@ -255,6 +259,9 @@ type BarrageOptimizationRequest struct {
 	Target    BarrageTarget     `json:"target"`
 	MaxShotsPerCrossbow int    `json:"max_shots_per_crossbow"`
 	SpreadAngle float64         `json:"spread_angle"`
+	EnableCollisionAvoidance bool `json:"enable_collision_avoidance,omitempty"`
+	FireDelayBaseMs float64      `json:"fire_delay_base_ms,omitempty"`
+	SafetySeparationM float64     `json:"safety_separation_m,omitempty"`
 }
 
 type BarrageShot struct {
@@ -268,6 +275,9 @@ type BarrageShot struct {
 	ImpactY       float64 `json:"impact_y"`
 	ArrivalTime   float64 `json:"arrival_time"`
 	InitialVelocity float64 `json:"initial_velocity"`
+	FireDelayMs   float64 `json:"fire_delay_ms"`
+	MinSeparationM float64 `json:"min_separation_m,omitempty"`
+	CollisionRisk string  `json:"collision_risk,omitempty"`
 }
 
 type CoverageGrid struct {
@@ -279,6 +289,13 @@ type CoverageGrid struct {
 	Grid     [][]int `json:"grid"`
 }
 
+type TrajectorySample struct {
+	TimeS       float64
+	CrossbowID  string
+	ShotIndex   int
+	X, Y, Z     float64
+}
+
 type BarrageOptimizationResponse struct {
 	Shots          []BarrageShot `json:"shots"`
 	Coverage       CoverageGrid  `json:"coverage"`
@@ -288,7 +305,11 @@ type BarrageOptimizationResponse struct {
 	TotalShots     int           `json:"total_shots"`
 	TimeWindow     float64       `json:"time_window_seconds"`
 	KEConcentrated float64       `json:"ke_concentrated_joules"`
+	CollisionsDetected int       `json:"collisions_detected"`
+	SeparationWarnings int       `json:"separation_warnings"`
+	AvgFireDelayMs float64       `json:"avg_fire_delay_ms"`
 }
+
 
 type AimTarget struct {
 	X            float64 `json:"x"`
@@ -299,16 +320,21 @@ type AimTarget struct {
 }
 
 type AimShootRequest struct {
-	Target       AimTarget `json:"target"`
-	CrossbowType string    `json:"crossbow_type"`
-	ArrowType    string    `json:"arrow_type"`
-	WindSpeed    float64   `json:"wind_speed"`
-	WindDir      float64   `json:"wind_direction"`
+	Target         AimTarget `json:"target"`
+	CrossbowType   string    `json:"crossbow_type"`
+	ArrowType      string    `json:"arrow_type"`
+	WindSpeed      float64   `json:"wind_speed"`
+	WindDir        float64   `json:"wind_direction"`
+	OperatorSkill  float64   `json:"operator_skill,omitempty"`
+	UserElevation  float64   `json:"user_elevation_deg,omitempty"`
+	UserAzimuth    float64   `json:"user_azimuth_deg,omitempty"`
+	CalibrationRun bool     `json:"calibration_run,omitempty"`
 }
 
 type AimShootResponse struct {
 	Success          bool              `json:"success"`
 	Hit              bool              `json:"hit"`
+	HitQuality       string            `json:"hit_quality,omitempty"`
 	RequiredElevation float64          `json:"required_elevation"`
 	RequiredAzimuth  float64           `json:"required_azimuth"`
 	ActualRange      float64           `json:"actual_range"`
@@ -318,13 +344,21 @@ type AimShootResponse struct {
 	KineticEnergy    float64           `json:"kinetic_energy"`
 	ImpactX          float64           `json:"impact_x"`
 	ImpactY          float64           `json:"impact_y"`
+	ImpactZ          float64           `json:"impact_z,omitempty"`
 	WindDriftX       float64           `json:"wind_drift_x"`
 	WindDriftY       float64           `json:"wind_drift_y"`
+	RangeErrorM      float64           `json:"range_error_m,omitempty"`
+	HeightErrorM     float64           `json:"height_error_m,omitempty"`
+	LateralErrorM    float64           `json:"lateral_error_m,omitempty"`
+	TargetToleranceM float64           `json:"target_tolerance_m,omitempty"`
 	PenetrationDepth float64           `json:"penetration_depth_mm"`
 	PenetrationSuccess bool            `json:"penetration_success"`
 	Trajectory       []TrajectoryPoint `json:"trajectory"`
 	Message          string            `json:"message"`
 	Score            int               `json:"score"`
+	MaxPossibleScore int               `json:"max_possible_score,omitempty"`
+	OperatorAppliedErrorElev float64    `json:"operator_error_elev_deg,omitempty"`
+	OperatorAppliedErrorAzi  float64    `json:"operator_error_azi_deg,omitempty"`
 }
 
 type AimTargetPreset struct {

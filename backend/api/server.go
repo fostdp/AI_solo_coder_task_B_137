@@ -756,6 +756,16 @@ func (s *Server) listAimTargets(c *gin.Context) {
 	c.JSON(200, gin.H{"targets": presets, "count": len(presets)})
 }
 
+func randGaussian(mean, stddev float64) float64 {
+	u1 := float64(rand.Int63()) / (1 << 63)
+	u2 := float64(rand.Int63()) / (1 << 63)
+	if u1 < 1e-12 {
+		u1 = 1e-12
+	}
+	z := math.Sqrt(-2.0*math.Log(u1)) * math.Cos(2.0*math.Pi*u2)
+	return mean + stddev*z
+}
+
 func (s *Server) aimShoot(c *gin.Context) {
 	var req models.AimShootRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -770,6 +780,12 @@ func (s *Server) aimShoot(c *gin.Context) {
 	}
 	if req.Target.Distance <= 0 {
 		req.Target.Distance = 200
+	}
+	if req.OperatorSkill <= 0 {
+		req.OperatorSkill = 0.6
+	}
+	if req.OperatorSkill > 1.0 {
+		req.OperatorSkill = 1.0
 	}
 
 	cfg, ok := s.dynamicsCfg.CrossbowTypes[req.CrossbowType]
@@ -789,8 +805,101 @@ func (s *Server) aimShoot(c *gin.Context) {
 		req.WindDir,
 	)
 
-	rangeError := math.Abs(simResult.Range - req.Target.Distance)
-	hit := rangeError < 3.0 && math.Abs(simResult.MaxHeight-req.Target.Height) < 5.0
+	useElev := requiredElev
+	useAzi := requiredAzimuth
+	elevErrorDeg := 0.0
+	aziErrorDeg := 0.0
+
+	if !req.CalibrationRun {
+		baseElevStd := 1.8 - req.OperatorSkill*1.4
+		baseAziStd := 2.2 - req.OperatorSkill*1.7
+		if baseElevStd < 0.05 {
+			baseElevStd = 0.05
+		}
+		if baseAziStd < 0.06 {
+			baseAziStd = 0.06
+		}
+		distFactor := 1.0 + req.Target.Distance/800.0
+		elevErrorDeg = randGaussian(0, baseElevStd*distFactor)
+		aziErrorDeg = randGaussian(0, baseAziStd*distFactor)
+
+		if req.UserElevation != 0 {
+			useElev = req.UserElevation + elevErrorDeg
+		} else {
+			useElev = requiredElev + elevErrorDeg
+		}
+		if req.UserAzimuth != 0 {
+			useAzi = req.UserAzimuth + aziErrorDeg
+		} else {
+			useAzi = requiredAzimuth + aziErrorDeg
+		}
+	}
+
+	actualRange := simResult.Range
+	lateral := 0.0
+	if simResult != nil {
+		lateral = simResult.DriftLateral
+	}
+	if req.UserElevation != 0 || req.UserAzimuth != 0 || !req.CalibrationRun {
+		elevSim := useElev
+		aziSim := useAzi
+		windDirRad := req.WindDir * math.Pi / 180.0
+		windX := req.WindSpeed * math.Cos(windDirRad)
+		windZ := req.WindSpeed * math.Sin(windDirRad)
+		params := &models.SimulationParams{
+			InitialVelocity: cfg.TypicalVelocity,
+			LaunchAngle:     elevSim,
+			AzimuthAngle:    aziSim,
+			ArrowMass:       cfg.ArrowMass,
+			ArrowDiameter:   cfg.ArrowDiameter,
+			ArrowLength:     cfg.ArrowLength,
+			SpinRate:        cfg.SpinRate,
+			AirDensity:      1.225,
+			DragCoefficient: 0.4,
+		}
+		r, _, lat, ft, mh, iv := s.simEngine.RunSimWithWindDirect(params, req.Target.Distance, req.Target.Height, windX, windZ)
+		actualRange = r
+		lateral = lat
+		simResult = &models.SimulationResult{
+			InitialVelocity: cfg.TypicalVelocity,
+			LaunchAngle:     elevSim,
+			FlightTime:      ft,
+			MaxHeight:       mh,
+			Range:           r,
+			ImpactVelocity:  iv,
+			KineticEnergy:   0.5 * cfg.ArrowMass * iv * iv,
+			ImpactSpinRate:  cfg.SpinRate * math.Exp(-0.02*ft),
+		}
+	}
+
+	targetRadius := 1.5 + req.Target.Distance*0.015
+	if req.CalibrationRun {
+		targetRadius = 0.1 + req.Target.Distance*0.003
+	}
+	heightTolerance := math.Max(0.8, req.Target.Height*0.6)
+
+	distErr := math.Abs(actualRange - req.Target.Distance)
+	latErr := math.Abs(lateral)
+	combinedHorizErr := math.Sqrt(distErr*distErr + latErr*latErr)
+	vertErr := 0.0
+	if simResult != nil {
+		vertErr = simResult.HeightError
+	}
+
+	hit := combinedHorizErr <= targetRadius && vertErr < heightTolerance
+	hitQuality := "miss"
+	centerRatio := combinedHorizErr / math.Max(0.1, targetRadius)
+	if hit {
+		if centerRatio < 0.15 && vertErr < heightTolerance*0.2 {
+			hitQuality = "bullseye"
+		} else if centerRatio < 0.4 {
+			hitQuality = "excellent"
+		} else if centerRatio < 0.7 {
+			hitQuality = "good"
+		} else {
+			hitQuality = "marginal"
+		}
+	}
 
 	armorType := req.Target.ArmorType
 	if armorType == "" {
@@ -807,48 +916,100 @@ func (s *Server) aimShoot(c *gin.Context) {
 		0,
 	)
 
+	basePoints := map[string]int{
+		"training": 10, "soldier": 50, "rider": 100, "gate": 150, "tower": 250, "commander": 500,
+	}
+	targetID := ""
+	if req.Target.Name != "" {
+		for k := range basePoints {
+			if req.Target.Distance == float64(map[string]int{
+				"training": 50, "soldier": 200, "rider": 350, "gate": 500, "tower": 650, "commander": 800,
+			}[k]) {
+				targetID = k
+				break
+			}
+		}
+	}
+	if targetID == "" {
+		if req.Target.Distance <= 80 {
+			targetID = "training"
+		} else if req.Target.Distance <= 250 {
+			targetID = "soldier"
+		} else if req.Target.Distance <= 400 {
+			targetID = "rider"
+		} else if req.Target.Distance <= 570 {
+			targetID = "gate"
+		} else if req.Target.Distance <= 720 {
+			targetID = "tower"
+		} else {
+			targetID = "commander"
+		}
+	}
+	maxScore := basePoints[targetID]
+
 	score := 0
 	message := ""
-	if hit && penResult.Success {
-		score = 100
-		message = "完美命中并穿透！"
-		if rangeError < 0.5 {
-			score += 50
-			message = "直击靶心！完全穿透！"
+	if req.CalibrationRun {
+		score = 0
+		message = fmt.Sprintf("校准射击: 理想仰角=%.2f°, 方位角=%.2f°, 射程误差=%.2fm",
+			requiredElev, requiredAzimuth, distErr)
+	} else if hit && penResult.Success {
+		qualityBonus := map[string]int{"bullseye": 100, "excellent": 70, "good": 40, "marginal": 15}[hitQuality]
+		score = maxScore + qualityBonus
+		if hitQuality == "bullseye" {
+			message = "正中靶心！完全穿透目标！"
+		} else if hitQuality == "excellent" {
+			message = "精准命中！完全穿透铠甲。"
+		} else {
+			message = "命中并穿透目标。"
 		}
 	} else if hit && !penResult.Success {
-		score = 50
-		message = "命中目标，但未能穿透铠甲"
-	} else if rangeError < 10 {
-		score = 20
-		message = "接近目标，但未命中"
+		score = int(float64(maxScore) * 0.35)
+		message = "命中目标，但未能穿透铠甲。"
+	} else if distErr < targetRadius*2.5 {
+		score = int(float64(maxScore) * 0.1)
+		if score < 1 {
+			score = 1
+		}
+		message = fmt.Sprintf("射偏 %.2fm，接近目标。", combinedHorizErr)
 	} else {
-		message = "未命中目标"
+		message = fmt.Sprintf("未命中。距离偏差 %.2fm，横向偏差 %.2fm。", distErr, latErr)
 	}
 
-	aziRad := requiredAzimuth * math.Pi / 180.0
-	impactX := simResult.Range * math.Cos(aziRad)
-	impactY := simResult.Range * math.Sin(aziRad)
+	aziRad := useAzi * math.Pi / 180.0
+	impactX := actualRange * math.Cos(aziRad)
+	impactY := actualRange * math.Sin(aziRad)
+	windDriftX := impactX - req.Target.Distance
+	windDriftY := impactY
 
 	resp := &models.AimShootResponse{
 		Success:           true,
 		Hit:               hit,
+		HitQuality:        hitQuality,
 		RequiredElevation: requiredElev,
 		RequiredAzimuth:   requiredAzimuth,
-		ActualRange:       simResult.Range,
+		ActualRange:       actualRange,
 		FlightTime:        simResult.FlightTime,
 		MaxHeight:         simResult.MaxHeight,
 		ImpactVelocity:    simResult.ImpactVelocity,
 		KineticEnergy:     simResult.KineticEnergy,
 		ImpactX:           impactX,
 		ImpactY:           impactY,
-		WindDriftX:        impactX - req.Target.Distance,
-		WindDriftY:        impactY,
+		ImpactZ:           -req.Target.Height + vertErr,
+		WindDriftX:        windDriftX,
+		WindDriftY:        windDriftY + lateral,
+		RangeErrorM:       distErr,
+		HeightErrorM:      vertErr,
+		LateralErrorM:     latErr,
+		TargetToleranceM:  targetRadius,
 		PenetrationDepth:  penResult.PenetrationDepth * 1000,
 		PenetrationSuccess: penResult.Success,
 		Trajectory:        simResult.Trajectory,
 		Message:           message,
 		Score:             score,
+		MaxPossibleScore:  maxScore,
+		OperatorAppliedErrorElev: elevErrorDeg,
+		OperatorAppliedErrorAzi:  aziErrorDeg,
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)

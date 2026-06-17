@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <!-- =========================================================
+         全局 / 网络 配置
+         ========================================================= -->
+    <listen_host>::</listen_host>
+    <listen_host>0.0.0.0</listen_host>
+    <listen_try>1</listen_try>
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+
+    <logger>
+        <level>warning</level>
+        <console>true</console>
+    </logger>
+
+    <!-- 内存 / 查询保护 -->
+    <max_memory_usage>1073741824</max_memory_usage>
+    <max_memory_usage_for_user>1073741824</max_memory_usage_for_user>
+    <max_table_size_to_drop>0</max_table_size_to_drop>
+    <max_partitions_per_insert_block>1000</max_partitions_per_insert_block>
+    <max_concurrent_queries>100</max_concurrent_queries>
+
+    <profiles>
+        <!-- 默认用户 profile：合理的内存上限 -->
+        <default>
+            <max_memory_usage>858993459</max_memory_usage>
+            <use_uncompressed_cache>0</use_uncompressed_cache>
+            <load_balancing>random</load_balancing>
+        </default>
+    </profiles>
+
+    <users>
+        <default>
+            <password></password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>0</access_management>
+        </default>
+    </users>
+
+    <quotas>
+        <default>
+            <interval>
+                <duration>3600</duration>
+                <errors>0</errors>
+                <result_rows>0</result_rows>
+                <read_rows>0</read_rows>
+                <execution_time>0</execution_time>
+            </interval>
+        </default>
+    </quotas>
+
+    <!-- =========================================================
+         MergeTree / TTL / 压缩 配置
+         ========================================================= -->
+    <merge_tree>
+        <!-- 默认压缩方法：LZ4（读取快），老分区切换为 ZSTD -->
+        <compression>
+            <case>
+                <min_part_size>104857600</min_part_size>
+                <min_part_size_ratio>0.1</min_part_size_ratio>
+                <method>zstd</method>
+            </case>
+            <case>
+                <method>lz4</method>
+            </case>
+        </compression>
+
+        <!-- TTL 合并：自动删除过期分区 -->
+        <ttl_only_drop_parts>1</ttl_only_drop_parts>
+
+        <!-- 后台合并/TTL 任务吞吐（每秒字节数），防止 IO 打爆 -->
+        <background_pool_size>4</background_pool_size>
+        <background_schedule_pool_size>4</background_schedule_pool_size>
+        <max_bytes_to_merge_at_max_space_in_pool>16106127360</max_bytes_to_merge_at_max_space_in_pool>
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>4</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+
+        <!-- 活跃分区保留在内存，提高高频查询性能 -->
+        <min_bytes_for_wide_part>10485760</min_bytes_for_wide_part>
+        <min_rows_for_wide_part>100000</min_rows_for_wide_part>
+    </merge_tree>
+</clickhouse>

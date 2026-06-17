@@ -1,0 +1,79 @@
+# ============================================================
+# Stage 1: Build the Go binary (static, fully linked)
+# Alpine-based toolchain produces static binaries against musl,
+# which have no runtime glibc dependency.
+# ============================================================
+FROM golang:1.21-alpine3.19 AS builder
+
+ARG GOARCH=amd64
+ARG GOOS=linux
+
+ENV CGO_ENABLED=0 \
+    GOOS=${GOOS} \
+    GOARCH=${GOARCH} \
+    GOCACHE=/tmp/go.cache \
+    GOMODCACHE=/go/pkg/mod
+
+WORKDIR /src
+
+# Install build deps (ca-certificates + tzdata for final image too)
+RUN apk add --no-cache ca-certificates tzdata upx
+
+# Cache module downloads
+COPY backend/go.mod backend/go.sum* ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download || true
+
+# Copy full source
+COPY backend/ .
+
+# Build static binary with optimisations + upx compression
+# -ldflags: drop symbol table (-s), drop DWARF (-w), set build time
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/tmp/go.cache \
+    BUILD_TIME=$(date -u +%Y%m%d-%H%M%S) && \
+    go build -trimpath \
+      -ldflags "-s -w -X main.BuildTime=${BUILD_TIME} -extldflags '-static'" \
+      -o /out/ballistics-server . && \
+    upx --best --lzma -o /out/ballistics-server-upx /out/ballistics-server && \
+    mv /out/ballistics-server-upx /out/ballistics-server && \
+    ls -lah /out/
+
+# ============================================================
+# Stage 2: Tiny runtime image (distroless-style with alpine for shell debugging)
+# ============================================================
+FROM alpine:3.19 AS runtime
+
+LABEL org.opencontainers.image.title="ballistics-server" \
+      org.opencontainers.image.description="三弓床弩弹射动力学仿真与穿甲威力分析系统 Go 服务" \
+      org.opencontainers.image.source="https://example.local/ballistics-system"
+
+# Only 4 runtime files needed: binary + CA certs + tzdata + config
+RUN apk add --no-cache ca-certificates tzdata && \
+    mkdir -p /app/config /app/logs && \
+    adduser -D -H -h /app appuser
+
+# Copy configs (kept in image so defaults always ship together)
+COPY config/                   /app/config/
+COPY clickhouse/init.sql       /app/clickhouse/init.sql
+
+# Copy built binary from builder (upx-compressed)
+COPY --from=builder /out/ballistics-server /app/ballistics-server
+RUN chmod +x /app/ballistics-server
+
+# Drop root privilege
+USER appuser
+
+# Working directory inside the mounted config volume
+WORKDIR /app
+
+# Expose: HTTP API, UDP receiver, Metrics+pprof
+EXPOSE 8081/tcp
+EXPOSE 8080/udp
+EXPOSE 9090/tcp
+
+# healthcheck via metrics server /healthz
+HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=4 \
+    CMD wget -q -O - http://127.0.0.1:9090/healthz || exit 1
+
+ENTRYPOINT ["/app/ballistics-server"]

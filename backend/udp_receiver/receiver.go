@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"ballistics-system/models"
+	"ballistics-system/backend/models"
 )
 
 type MetricsHooks interface {

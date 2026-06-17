@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"ballistics-system/config"
+	"ballistics-system/backend/config"
 )
 
 func setupTestAnalyzer() *Analyzer {

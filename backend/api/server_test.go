@@ -10,10 +10,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"ballistics-system/config"
-	ballistic_simulator "ballistics-system/ballistic_simulator"
-	penetration_analyzer "ballistics-system/penetration_analyzer"
-	"ballistics-system/models"
+	"ballistics-system/backend/config"
+	ballistic_simulator "ballistics-system/backend/ballistic_simulator"
+	penetration_analyzer "ballistics-system/backend/penetration_analyzer"
+	"ballistics-system/backend/models"
 )
 
 func setupTestServerWithGin() *Server {

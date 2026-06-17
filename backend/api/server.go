@@ -2,42 +2,58 @@ package api
 
 import (
 	"context"
-	"math"
+	"math/rand"
 	"net/http"
-	"sort"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	ch "ballistics-system/clickhouse"
-	"ballistics-system/config"
-	"ballistics-system/models"
+	ch "ballistics-system/backend/clickhouse"
+	"ballistics-system/backend/config"
+	"ballistics-system/backend/models"
 
-	ballistic_simulator "ballistics-system/ballistic_simulator"
-	penetration_analyzer "ballistics-system/penetration_analyzer"
+	ballistic_simulator "ballistics-system/backend/ballistic_simulator"
+	penetration_analyzer "ballistics-system/backend/penetration_analyzer"
+	"ballistics-system/backend/power_comparator"
+	"ballistics-system/backend/era_comparator"
+	"ballistics-system/backend/salvo_optimizer"
+	"ballistics-system/backend/vr_crossbow"
 )
 
 type Server struct {
-	engine        *gin.Engine
-	store         *ch.Store
-	simEngine     *ballistic_simulator.Simulator
-	penAnalyzer   *penetration_analyzer.Analyzer
-	dynamicsCfg   *config.DynamicsConfig
-	addr          string
+	engine          *gin.Engine
+	store           *ch.Store
+	simEngine       *ballistic_simulator.Simulator
+	penAnalyzer     *penetration_analyzer.Analyzer
+	dynamicsCfg     *config.DynamicsConfig
+	addr            string
+	powerComparator *power_comparator.PowerComparator
+	eraComparator   *era_comparator.EraComparator
+	salvoOptimizer  *salvo_optimizer.SalvoOptimizer
+	vrCrossbow      *vr_crossbow.VRCrossbow
 }
 
 func NewServer(addr string, store *ch.Store, simEngine *ballistic_simulator.Simulator, penAnalyzer *penetration_analyzer.Analyzer, dynamicsCfg *config.DynamicsConfig) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
+	pc := power_comparator.NewPowerComparator(dynamicsCfg, simEngine, penAnalyzer)
+	ec := era_comparator.NewEraComparator(dynamicsCfg, simEngine, penAnalyzer)
+	so := salvo_optimizer.NewSalvoOptimizerWithWorkers(dynamicsCfg, simEngine, 4)
+	vr := vr_crossbow.NewVRCrossbow(dynamicsCfg, simEngine, penAnalyzer, store)
+
 	s := &Server{
-		engine:      r,
-		store:       store,
-		simEngine:   simEngine,
-		penAnalyzer: penAnalyzer,
-		dynamicsCfg: dynamicsCfg,
-		addr:        addr,
+		engine:          r,
+		store:           store,
+		simEngine:       simEngine,
+		penAnalyzer:     penAnalyzer,
+		dynamicsCfg:     dynamicsCfg,
+		addr:            addr,
+		powerComparator: pc,
+		eraComparator:   ec,
+		salvoOptimizer:  so,
+		vrCrossbow:      vr,
 	}
 
 	r.Use(CORS())
@@ -376,54 +392,12 @@ func (s *Server) getUnacknowledgedAlerts(c *gin.Context) {
 }
 
 func (s *Server) listCrossbows(c *gin.Context) {
-	crossbows := make([]map[string]interface{}, 0, len(s.dynamicsCfg.CrossbowTypes))
-	for _, cfg := range s.dynamicsCfg.CrossbowTypes {
-		crossbows = append(crossbows, map[string]interface{}{
-			"type":           cfg.Type,
-			"name":           cfg.Name,
-			"description":    cfg.Description,
-			"era":            cfg.Era,
-			"draw_force_n":   cfg.DrawForce,
-			"draw_length_m":  cfg.DrawLength,
-			"arrow_mass_kg":  cfg.ArrowMass,
-			"arrow_length_m": cfg.ArrowLength,
-			"arrow_dia_mm":   cfg.ArrowDiameter * 1000,
-			"typical_v_ms":   cfg.TypicalVelocity,
-			"typical_range_m": cfg.TypicalRange,
-			"spin_rate_hz":   cfg.SpinRate,
-			"bow_efficiency": cfg.BowEfficiency,
-			"crew_size":      cfg.CrewSize,
-			"reload_seconds": cfg.ReloadSeconds,
-		})
-	}
-	sort.Slice(crossbows, func(i, j int) bool {
-		return crossbows[i]["draw_force_n"].(float64) < crossbows[j]["draw_force_n"].(float64)
-	})
+	crossbows := s.powerComparator.ListCrossbows()
 	c.JSON(200, gin.H{"crossbows": crossbows, "count": len(crossbows)})
 }
 
 func (s *Server) listModernWeapons(c *gin.Context) {
-	weapons := make([]map[string]interface{}, 0, len(s.dynamicsCfg.ModernWeapons))
-	for _, cfg := range s.dynamicsCfg.ModernWeapons {
-		weapons = append(weapons, map[string]interface{}{
-			"type":              cfg.Type,
-			"name":              cfg.Name,
-			"description":       cfg.Description,
-			"era":               cfg.Era,
-			"bullet_mass_kg":    cfg.BulletMass,
-			"bullet_dia_mm":     cfg.BulletDiameter * 1000,
-			"bullet_length_mm":  cfg.BulletLength * 1000,
-			"muzzle_velocity_ms": cfg.MuzzleVelocity,
-			"max_range_m":       cfg.MaxRange,
-			"effective_range_m": cfg.EffectiveRange,
-			"drag_coef":         cfg.DragCoefficient,
-			"spin_rate_hz":      cfg.SpinRate,
-			"hardness_bhn":      cfg.Hardness,
-			"tip_area_m2":       cfg.TipArea,
-			"crew_size":         cfg.CrewSize,
-			"reload_seconds":    cfg.ReloadSeconds,
-		})
-	}
+	weapons := s.eraComparator.ListModernWeapons()
 	c.JSON(200, gin.H{"weapons": weapons, "count": len(weapons)})
 }
 
@@ -437,99 +411,8 @@ func (s *Server) compareCrossbows(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if req.LaunchAngle == 0 {
-		req.LaunchAngle = 45.0
-	}
-	if req.ArrowHeadType == "" {
-		req.ArrowHeadType = "bodkin"
-	}
-
-	resultList := make([]models.CrossbowComparisonItem, 0)
-	armorTypes := s.penAnalyzer.ArmorTypeKeys()
-
-	var maxKE float64 = 0
-
-	for key, cfg := range s.dynamicsCfg.CrossbowTypes {
-		if len(req.CrossbowTypes) > 0 {
-			found := false
-			for _, t := range req.CrossbowTypes {
-				if t == key {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-
-		simResult := s.simEngine.SimulateWithCrossbowType(key, &cfg, req.LaunchAngle, 0.0)
-		pens := make(map[string]float64)
-		penSuccess := make(map[string]bool)
-		for _, armorKey := range s.penAnalyzer.ArmorTypeKeys() {
-			pen := s.penAnalyzer.AnalyzeWithSpin(
-				simResult.ImpactVelocity,
-				cfg.ArrowMass,
-				cfg.ArrowDiameter,
-				cfg.ArrowLength,
-				simResult.ImpactSpinRate,
-				armorKey,
-				req.ArrowHeadType,
-				0,
-			)
-			pens[armorKey] = pen.PenetrationDepth * 1000
-			penSuccess[armorKey] = pen.Success
-		}
-
-		shotsPerMin := 60.0 / cfg.ReloadSeconds
-		kePerMin := simResult.KineticEnergy * shotsPerMin
-		item := models.CrossbowComparisonItem{
-			CrossbowType:      cfg.Type,
-			CrossbowName:      cfg.Name,
-			Description:       cfg.Description,
-			Era:               cfg.Era,
-			DrawForce:         cfg.DrawForce,
-			DrawLength:        cfg.DrawLength,
-			ArrowMass:         cfg.ArrowMass,
-			ArrowDiameter:     cfg.ArrowDiameter,
-			ArrowLength:       cfg.ArrowLength,
-			SpinRate:          cfg.SpinRate,
-			BowEfficiency:     cfg.BowEfficiency,
-			CrewSize:          cfg.CrewSize,
-			ReloadSeconds:     cfg.ReloadSeconds,
-			InitialVelocity:   simResult.InitialVelocity,
-			Range:             simResult.Range,
-			FlightTime:        simResult.FlightTime,
-			MaxHeight:         simResult.MaxHeight,
-			ImpactVelocity:    simResult.ImpactVelocity,
-			KineticEnergy:     simResult.KineticEnergy,
-			ImpactSpinRate:    simResult.ImpactSpinRate,
-			ImpactGyroStab:    simResult.ImpactGyroStab,
-			Penetrations:      pens,
-			PenetrationSuccess: penSuccess,
-			ShotsPerMinute:    shotsPerMin,
-			KEPerMinute:       kePerMin,
-		}
-		if item.KineticEnergy > maxKE {
-			maxKE = item.KineticEnergy
-		}
-		resultList = append(resultList, item)
-	}
-
-	for i := range resultList {
-		if maxKE > 0 {
-			resultList[i].PowerIndex = (resultList[i].KineticEnergy / maxKE) * (resultList[i].Range / 1500.0) * 100
-		}
-	}
-
-	sort.Slice(resultList, func(i, j int) bool {
-		return resultList[i].PowerIndex > resultList[j].PowerIndex
-	})
-
-	c.JSON(200, models.CrossbowComparisonResponse{
-		Crossbows:  resultList,
-		ArmorTypes: armorTypes,
-	})
+	result := s.powerComparator.Compare(req.CrossbowTypes, req.ArrowHeadType, req.LaunchAngle)
+	c.JSON(200, result)
 }
 
 func (s *Server) compareEraWeapons(c *gin.Context) {
@@ -543,175 +426,8 @@ func (s *Server) compareEraWeapons(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if req.CompareRange == 0 {
-		req.CompareRange = 1000.0
-	}
-	if req.ArrowHeadType == "" {
-		req.ArrowHeadType = "bodkin"
-	}
-
-	resultList := make([]models.WeaponEraComparison, 0)
-	armorTypes := s.penAnalyzer.ArmorTypeKeys()
-
-	var bedCrossbowKE float64 = 0
-
-	for key, cfg := range s.dynamicsCfg.CrossbowTypes {
-		if len(req.CrossbowTypes) > 0 {
-			found := false
-			for _, t := range req.CrossbowTypes {
-				if t == key {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-
-		elev, simResult := s.simEngine.SolveElevationForDistance(
-			req.CompareRange, cfg.TypicalVelocity,
-			cfg.ArrowMass, cfg.ArrowDiameter, cfg.ArrowLength, cfg.SpinRate,
-		)
-		_ = elev
-
-		pens := make(map[string]float64)
-		penSuccess := make(map[string]bool)
-		for _, armorKey := range s.penAnalyzer.ArmorTypeKeys() {
-			pen := s.penAnalyzer.AnalyzeWithSpin(
-				simResult.ImpactVelocity,
-				cfg.ArrowMass,
-				cfg.ArrowDiameter,
-				cfg.ArrowLength,
-				simResult.ImpactSpinRate,
-				armorKey,
-				req.ArrowHeadType,
-				0,
-			)
-			pens[armorKey] = pen.PenetrationDepth * 1000
-			penSuccess[armorKey] = pen.Success
-		}
-
-		muzzleKE := 0.5 * cfg.ArrowMass * cfg.TypicalVelocity * cfg.TypicalVelocity
-		shotsPerMin := 60.0 / cfg.ReloadSeconds
-
-		item := models.WeaponEraComparison{
-			WeaponType:       cfg.Type,
-			WeaponName:       cfg.Name,
-			Description:      cfg.Description,
-			Era:              cfg.Era,
-			IsModern:         false,
-			ProjectileMass:   cfg.ArrowMass,
-			ProjectileDia:    cfg.ArrowDiameter,
-			ProjectileLen:    cfg.ArrowLength,
-			MuzzleVelocity:   cfg.TypicalVelocity,
-			MaxRange:         cfg.TypicalRange,
-			EffectiveRange:   cfg.TypicalRange * 0.7,
-			SpinRate:         cfg.SpinRate,
-			KineticEnergy:    muzzleKE,
-			ImpactVelocity:   simResult.ImpactVelocity,
-			ImpactKE:         simResult.KineticEnergy,
-			Penetrations:     pens,
-			PenetrationSuccess: penSuccess,
-			CrewSize:         cfg.CrewSize,
-			ReloadSeconds:    cfg.ReloadSeconds,
-			ShotsPerMinute:   shotsPerMin,
-			KEPerMinute:      muzzleKE * shotsPerMin,
-		}
-		if key == "bed_crossbow_triple" {
-			bedCrossbowKE = simResult.KineticEnergy
-		}
-		resultList = append(resultList, item)
-	}
-
-	for key, cfg := range s.dynamicsCfg.ModernWeapons {
-		if len(req.ModernTypes) > 0 {
-			found := false
-			for _, t := range req.ModernTypes {
-				if t == key {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-
-		g := s.dynamicsCfg.Simulation.Gravity
-		v0 := cfg.MuzzleVelocity
-		crossArea := math.Pi * math.Pow(cfg.BulletDiameter/2.0, 2)
-		dragFactor := 0.5 * cfg.DragCoefficient * s.dynamicsCfg.Simulation.AirDensitySea * crossArea / cfg.BulletMass
-
-		vx := v0
-		vy := 0.0
-		x := 0.0
-		estImpactVel := v0 * 0.5
-		for t := 0.0; t < 10.0; t += 0.001 {
-			v := math.Sqrt(vx*vx + vy*vy)
-			if x >= req.CompareRange {
-				estImpactVel = v
-				break
-			}
-			ax := -dragFactor * v * vx
-			ay := -g - dragFactor*v*vy
-			vx += ax * 0.001
-			vy += ay * 0.001
-			x += vx * 0.001
-		}
-
-		pens := make(map[string]float64)
-		penSuccess := make(map[string]bool)
-		for _, armorKey := range s.penAnalyzer.ArmorTypeKeys() {
-			pen := s.penAnalyzer.AnalyzeModernBullet(estImpactVel, &cfg, armorKey, 0)
-			pens[armorKey] = pen.PenetrationDepth * 1000
-			penSuccess[armorKey] = pen.Success
-		}
-
-		muzzleKE := 0.5 * cfg.BulletMass * cfg.MuzzleVelocity * cfg.MuzzleVelocity
-		impactKE := 0.5 * cfg.BulletMass * estImpactVel * estImpactVel
-		shotsPerMin := 60.0 / cfg.ReloadSeconds
-
-		item := models.WeaponEraComparison{
-			WeaponType:       cfg.Type,
-			WeaponName:       cfg.Name,
-			Description:      cfg.Description,
-			Era:              cfg.Era,
-			IsModern:         true,
-			ProjectileMass:   cfg.BulletMass,
-			ProjectileDia:    cfg.BulletDiameter,
-			ProjectileLen:    cfg.BulletLength,
-			MuzzleVelocity:   cfg.MuzzleVelocity,
-			MaxRange:         cfg.MaxRange,
-			EffectiveRange:   cfg.EffectiveRange,
-			SpinRate:         cfg.SpinRate,
-			KineticEnergy:    muzzleKE,
-			ImpactVelocity:   estImpactVel,
-			ImpactKE:         impactKE,
-			Penetrations:     pens,
-			PenetrationSuccess: penSuccess,
-			CrewSize:         cfg.CrewSize,
-			ReloadSeconds:    cfg.ReloadSeconds,
-			ShotsPerMinute:   shotsPerMin,
-			KEPerMinute:      muzzleKE * shotsPerMin,
-		}
-		resultList = append(resultList, item)
-	}
-
-	if bedCrossbowKE > 0 {
-		for i := range resultList {
-			resultList[i].PowerRatio = resultList[i].ImpactKE / bedCrossbowKE
-		}
-	}
-
-	sort.Slice(resultList, func(i, j int) bool {
-		return resultList[i].ImpactKE > resultList[j].ImpactKE
-	})
-
-	c.JSON(200, models.EraComparisonResponse{
-		Weapons:    resultList,
-		ArmorTypes: armorTypes,
-	})
+	result := s.eraComparator.Compare(req.CrossbowTypes, req.ModernTypes, req.ArrowHeadType, req.CompareRange)
+	c.JSON(200, result)
 }
 
 func (s *Server) optimizeBarrage(c *gin.Context) {
@@ -740,30 +456,13 @@ func (s *Server) optimizeBarrage(c *gin.Context) {
 		req.Target.Radius = 20
 	}
 
-	resp := s.simEngine.OptimizeBarrage(&req, s.dynamicsCfg.CrossbowTypes)
+	resp := s.salvoOptimizer.Optimize(&req, s.dynamicsCfg.CrossbowTypes)
 	c.JSON(200, resp)
 }
 
 func (s *Server) listAimTargets(c *gin.Context) {
-	presets := []models.AimTargetPreset{
-		{ID: "training", Name: "训练靶 (50m)", Distance: 50, Height: 1.5, ArmorType: "leather", Difficulty: "easy", Points: 10, Icon: "🎯"},
-		{ID: "soldier", Name: "敌军步兵 (200m)", Distance: 200, Height: 1.7, ArmorType: "lamellar", Difficulty: "medium", Points: 50, Icon: "🛡️"},
-		{ID: "rider", Name: "敌方骑兵 (350m)", Distance: 350, Height: 2.0, ArmorType: "mail", Difficulty: "hard", Points: 100, Icon: "🐴"},
-		{ID: "gate", Name: "城门木盾 (500m)", Distance: 500, Height: 3.0, ArmorType: "leather", Difficulty: "hard", Points: 150, Icon: "🚪"},
-		{ID: "tower", Name: "瞭望塔守卫 (650m)", Distance: 650, Height: 8.0, ArmorType: "lamellar", Difficulty: "expert", Points: 250, Icon: "🏰"},
-		{ID: "commander", Name: "敌将 (800m)", Distance: 800, Height: 1.7, ArmorType: "plate", Difficulty: "legendary", Points: 500, Icon: "👑"},
-	}
+	presets := s.vrCrossbow.ListAimTargets()
 	c.JSON(200, gin.H{"targets": presets, "count": len(presets)})
-}
-
-func randGaussian(mean, stddev float64) float64 {
-	u1 := float64(rand.Int63()) / (1 << 63)
-	u2 := float64(rand.Int63()) / (1 << 63)
-	if u1 < 1e-12 {
-		u1 = 1e-12
-	}
-	z := math.Sqrt(-2.0*math.Log(u1)) * math.Cos(2.0*math.Pi*u2)
-	return mean + stddev*z
 }
 
 func (s *Server) aimShoot(c *gin.Context) {
@@ -772,257 +471,13 @@ func (s *Server) aimShoot(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	if req.CrossbowType == "" {
-		req.CrossbowType = "bed_crossbow_triple"
+	resp, err := s.vrCrossbow.AimShoot(&req)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
 	}
-	if req.ArrowType == "" {
-		req.ArrowType = "bodkin"
-	}
-	if req.Target.Distance <= 0 {
-		req.Target.Distance = 200
-	}
-	if req.OperatorSkill <= 0 {
-		req.OperatorSkill = 0.6
-	}
-	if req.OperatorSkill > 1.0 {
-		req.OperatorSkill = 1.0
-	}
-
-	cfg, ok := s.dynamicsCfg.CrossbowTypes[req.CrossbowType]
-	if !ok {
-		cfg = s.dynamicsCfg.CrossbowTypes["bed_crossbow_triple"]
-	}
-
-	requiredElev, requiredAzimuth, simResult := s.simEngine.SolveElevationWithWind(
-		req.Target.Distance,
-		req.Target.Height,
-		cfg.TypicalVelocity,
-		cfg.ArrowMass,
-		cfg.ArrowDiameter,
-		cfg.ArrowLength,
-		cfg.SpinRate,
-		req.WindSpeed,
-		req.WindDir,
-	)
-
-	useElev := requiredElev
-	useAzi := requiredAzimuth
-	elevErrorDeg := 0.0
-	aziErrorDeg := 0.0
-
-	if !req.CalibrationRun {
-		baseElevStd := 1.8 - req.OperatorSkill*1.4
-		baseAziStd := 2.2 - req.OperatorSkill*1.7
-		if baseElevStd < 0.05 {
-			baseElevStd = 0.05
-		}
-		if baseAziStd < 0.06 {
-			baseAziStd = 0.06
-		}
-		distFactor := 1.0 + req.Target.Distance/800.0
-		elevErrorDeg = randGaussian(0, baseElevStd*distFactor)
-		aziErrorDeg = randGaussian(0, baseAziStd*distFactor)
-
-		if req.UserElevation != 0 {
-			useElev = req.UserElevation + elevErrorDeg
-		} else {
-			useElev = requiredElev + elevErrorDeg
-		}
-		if req.UserAzimuth != 0 {
-			useAzi = req.UserAzimuth + aziErrorDeg
-		} else {
-			useAzi = requiredAzimuth + aziErrorDeg
-		}
-	}
-
-	actualRange := simResult.Range
-	lateral := 0.0
-	if simResult != nil {
-		lateral = simResult.DriftLateral
-	}
-	if req.UserElevation != 0 || req.UserAzimuth != 0 || !req.CalibrationRun {
-		elevSim := useElev
-		aziSim := useAzi
-		windDirRad := req.WindDir * math.Pi / 180.0
-		windX := req.WindSpeed * math.Cos(windDirRad)
-		windZ := req.WindSpeed * math.Sin(windDirRad)
-		params := &models.SimulationParams{
-			InitialVelocity: cfg.TypicalVelocity,
-			LaunchAngle:     elevSim,
-			AzimuthAngle:    aziSim,
-			ArrowMass:       cfg.ArrowMass,
-			ArrowDiameter:   cfg.ArrowDiameter,
-			ArrowLength:     cfg.ArrowLength,
-			SpinRate:        cfg.SpinRate,
-			AirDensity:      1.225,
-			DragCoefficient: 0.4,
-		}
-		r, _, lat, ft, mh, iv := s.simEngine.RunSimWithWindDirect(params, req.Target.Distance, req.Target.Height, windX, windZ)
-		actualRange = r
-		lateral = lat
-		simResult = &models.SimulationResult{
-			InitialVelocity: cfg.TypicalVelocity,
-			LaunchAngle:     elevSim,
-			FlightTime:      ft,
-			MaxHeight:       mh,
-			Range:           r,
-			ImpactVelocity:  iv,
-			KineticEnergy:   0.5 * cfg.ArrowMass * iv * iv,
-			ImpactSpinRate:  cfg.SpinRate * math.Exp(-0.02*ft),
-		}
-	}
-
-	targetRadius := 1.5 + req.Target.Distance*0.015
-	if req.CalibrationRun {
-		targetRadius = 0.1 + req.Target.Distance*0.003
-	}
-	heightTolerance := math.Max(0.8, req.Target.Height*0.6)
-
-	distErr := math.Abs(actualRange - req.Target.Distance)
-	latErr := math.Abs(lateral)
-	combinedHorizErr := math.Sqrt(distErr*distErr + latErr*latErr)
-	vertErr := 0.0
-	if simResult != nil {
-		vertErr = simResult.HeightError
-	}
-
-	hit := combinedHorizErr <= targetRadius && vertErr < heightTolerance
-	hitQuality := "miss"
-	centerRatio := combinedHorizErr / math.Max(0.1, targetRadius)
-	if hit {
-		if centerRatio < 0.15 && vertErr < heightTolerance*0.2 {
-			hitQuality = "bullseye"
-		} else if centerRatio < 0.4 {
-			hitQuality = "excellent"
-		} else if centerRatio < 0.7 {
-			hitQuality = "good"
-		} else {
-			hitQuality = "marginal"
-		}
-	}
-
-	armorType := req.Target.ArmorType
-	if armorType == "" {
-		armorType = "leather"
-	}
-	penResult := s.penAnalyzer.AnalyzeWithSpin(
-		simResult.ImpactVelocity,
-		cfg.ArrowMass,
-		cfg.ArrowDiameter,
-		cfg.ArrowLength,
-		simResult.ImpactSpinRate,
-		armorType,
-		req.ArrowType,
-		0,
-	)
-
-	basePoints := map[string]int{
-		"training": 10, "soldier": 50, "rider": 100, "gate": 150, "tower": 250, "commander": 500,
-	}
-	targetID := ""
-	if req.Target.Name != "" {
-		for k := range basePoints {
-			if req.Target.Distance == float64(map[string]int{
-				"training": 50, "soldier": 200, "rider": 350, "gate": 500, "tower": 650, "commander": 800,
-			}[k]) {
-				targetID = k
-				break
-			}
-		}
-	}
-	if targetID == "" {
-		if req.Target.Distance <= 80 {
-			targetID = "training"
-		} else if req.Target.Distance <= 250 {
-			targetID = "soldier"
-		} else if req.Target.Distance <= 400 {
-			targetID = "rider"
-		} else if req.Target.Distance <= 570 {
-			targetID = "gate"
-		} else if req.Target.Distance <= 720 {
-			targetID = "tower"
-		} else {
-			targetID = "commander"
-		}
-	}
-	maxScore := basePoints[targetID]
-
-	score := 0
-	message := ""
-	if req.CalibrationRun {
-		score = 0
-		message = fmt.Sprintf("校准射击: 理想仰角=%.2f°, 方位角=%.2f°, 射程误差=%.2fm",
-			requiredElev, requiredAzimuth, distErr)
-	} else if hit && penResult.Success {
-		qualityBonus := map[string]int{"bullseye": 100, "excellent": 70, "good": 40, "marginal": 15}[hitQuality]
-		score = maxScore + qualityBonus
-		if hitQuality == "bullseye" {
-			message = "正中靶心！完全穿透目标！"
-		} else if hitQuality == "excellent" {
-			message = "精准命中！完全穿透铠甲。"
-		} else {
-			message = "命中并穿透目标。"
-		}
-	} else if hit && !penResult.Success {
-		score = int(float64(maxScore) * 0.35)
-		message = "命中目标，但未能穿透铠甲。"
-	} else if distErr < targetRadius*2.5 {
-		score = int(float64(maxScore) * 0.1)
-		if score < 1 {
-			score = 1
-		}
-		message = fmt.Sprintf("射偏 %.2fm，接近目标。", combinedHorizErr)
-	} else {
-		message = fmt.Sprintf("未命中。距离偏差 %.2fm，横向偏差 %.2fm。", distErr, latErr)
-	}
-
-	aziRad := useAzi * math.Pi / 180.0
-	impactX := actualRange * math.Cos(aziRad)
-	impactY := actualRange * math.Sin(aziRad)
-	windDriftX := impactX - req.Target.Distance
-	windDriftY := impactY
-
-	resp := &models.AimShootResponse{
-		Success:           true,
-		Hit:               hit,
-		HitQuality:        hitQuality,
-		RequiredElevation: requiredElev,
-		RequiredAzimuth:   requiredAzimuth,
-		ActualRange:       actualRange,
-		FlightTime:        simResult.FlightTime,
-		MaxHeight:         simResult.MaxHeight,
-		ImpactVelocity:    simResult.ImpactVelocity,
-		KineticEnergy:     simResult.KineticEnergy,
-		ImpactX:           impactX,
-		ImpactY:           impactY,
-		ImpactZ:           -req.Target.Height + vertErr,
-		WindDriftX:        windDriftX,
-		WindDriftY:        windDriftY + lateral,
-		RangeErrorM:       distErr,
-		HeightErrorM:      vertErr,
-		LateralErrorM:     latErr,
-		TargetToleranceM:  targetRadius,
-		PenetrationDepth:  penResult.PenetrationDepth * 1000,
-		PenetrationSuccess: penResult.Success,
-		Trajectory:        simResult.Trajectory,
-		Message:           message,
-		Score:             score,
-		MaxPossibleScore:  maxScore,
-		OperatorAppliedErrorElev: elevErrorDeg,
-		OperatorAppliedErrorAzi:  aziErrorDeg,
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-	if s.store != nil {
-		simResult.DeviceID = "aim-game-" + req.CrossbowType
-		simResult.ArmorType = armorType
-		simResult.PenetrationDepth = penResult.PenetrationDepth
-		simResult.PenetrationSuccess = penResult.Success
-		_ = s.store.InsertSimulationResult(ctx, simResult)
-	}
-
 	c.JSON(200, resp)
 }
 
 var _ = http.StatusOK
+var _ = rand.Int63

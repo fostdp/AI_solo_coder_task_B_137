@@ -11,15 +11,15 @@ import (
 	"syscall"
 	"time"
 
-	ch "ballistics-system/clickhouse"
-	"ballistics-system/config"
-	"ballistics-system/metrics"
-	"ballistics-system/models"
+	ch "ballistics-system/backend/clickhouse"
+	"ballistics-system/backend/config"
+	"ballistics-system/backend/metrics"
+	"ballistics-system/backend/models"
 
-	alarm_mqtt "ballistics-system/alarm_mqtt"
-	ballistic_simulator "ballistics-system/ballistic_simulator"
-	penetration_analyzer "ballistics-system/penetration_analyzer"
-	udp_receiver "ballistics-system/udp_receiver"
+	alarm_mqtt "ballistics-system/backend/alarm_mqtt"
+	ballistic_simulator "ballistics-system/backend/ballistic_simulator"
+	penetration_analyzer "ballistics-system/backend/penetration_analyzer"
+	udp_receiver "ballistics-system/backend/udp_receiver"
 
 	"ballistics-system/api"
 )

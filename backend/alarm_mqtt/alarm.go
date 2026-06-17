@@ -8,7 +8,7 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
-	"ballistics-system/models"
+	"ballistics-system/backend/models"
 )
 
 type AlarmService struct {

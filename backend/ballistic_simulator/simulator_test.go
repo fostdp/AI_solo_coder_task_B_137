@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"ballistics-system/config"
-	"ballistics-system/models"
+	"ballistics-system/backend/config"
+	"ballistics-system/backend/models"
 )
 
 func setupTestSimulator() *Simulator {

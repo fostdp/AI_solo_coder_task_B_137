@@ -4,8 +4,8 @@ import (
 	"math"
 	"time"
 
-	"ballistics-system/config"
-	"ballistics-system/models"
+	"ballistics-system/backend/config"
+	"ballistics-system/backend/models"
 )
 
 type Analyzer struct {

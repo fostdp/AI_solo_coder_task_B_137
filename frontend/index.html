@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三弓床弩弹射动力学仿真与穿甲威力分析系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #e4e4e7;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .header {
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 215, 0, 0.2);
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 22px;
+            color: #ffd700;
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.3);
+        }
+
+        .header .status {
+            display: flex;
+            gap: 20px;
+            font-size: 13px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #22c55e;
+            box-shadow: 0 0 8px #22c55e;
+        }
+
+        .status-dot.offline {
+            background: #ef4444;
+            box-shadow: 0 0 8px #ef4444;
+        }
+
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            grid-template-rows: 1fr 300px;
+            gap: 16px;
+            padding: 16px;
+            height: calc(100vh - 65px);
+        }
+
+        .canvas-panel {
+            grid-column: 1;
+            grid-row: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+            position: relative;
+            overflow: hidden;
+        }
+
+        #three-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .canvas-overlay {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.8;
+            border-left: 3px solid #ffd700;
+        }
+
+        .canvas-overlay h3 {
+            color: #ffd700;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .canvas-controls {
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 10px 16px;
+            border-radius: 8px;
+        }
+
+        .btn {
+            padding: 8px 18px;
+            background: linear-gradient(135deg, #b8860b, #ffd700);
+            color: #1a1a2e;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 13px;
+            transition: all 0.3s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 215, 0, 0.4);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #374151, #4b5563);
+            color: #e4e4e7;
+        }
+
+        .btn-secondary:hover {
+            box-shadow: 0 4px 12px rgba(107, 114, 128, 0.4);
+        }
+
+        .data-panel {
+            grid-column: 2;
+            grid-row: 1 / 3;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .panel-title {
+            font-size: 16px;
+            color: #ffd700;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 215, 0, 0.2);
+            margin-bottom: 4px;
+        }
+
+        .sensor-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .sensor-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .sensor-label {
+            font-size: 11px;
+            color: #9ca3af;
+            margin-bottom: 4px;
+        }
+
+        .sensor-value {
+            font-size: 22px;
+            font-weight: bold;
+            color: #ffd700;
+            font-family: 'Consolas', monospace;
+        }
+
+        .sensor-unit {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-left: 4px;
+        }
+
+        .sensor-value.warning {
+            color: #f59e0b;
+        }
+
+        .sensor-value.danger {
+            color: #ef4444;
+        }
+
+        .form-group {
+            margin-bottom: 14px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            color: #9ca3af;
+            margin-bottom: 6px;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            color: #e4e4e7;
+            font-size: 13px;
+            outline: none;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            border-color: #ffd700;
+        }
+
+        .trajectory-panel {
+            grid-column: 1;
+            grid-row: 2;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+            padding: 16px;
+        }
+
+        #trajectory-canvas {
+            width: 100%;
+            height: calc(100% - 30px);
+            display: block;
+        }
+
+        .armor-compare {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .armor-item {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            padding: 10px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .armor-name {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-bottom: 6px;
+        }
+
+        .armor-result {
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        .armor-result.success {
+            color: #22c55e;
+        }
+
+        .armor-result.fail {
+            color: #ef4444;
+        }
+
+        .alerts-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .alert-item {
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .alert-item.warning {
+            background: rgba(245, 158, 11, 0.15);
+            border-left: 3px solid #f59e0b;
+        }
+
+        .alert-item.critical {
+            background: rgba(239, 68, 68, 0.15);
+            border-left: 3px solid #ef4444;
+        }
+
+        .alert-icon {
+            font-size: 14px;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 215, 0, 0.3);
+            border-radius: 3px;
+        }
+
+        .tab-nav {
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 215, 0, 0.2);
+            padding: 0 32px;
+            display: flex;
+            gap: 4px;
+        }
+
+        .tab-btn {
+            padding: 14px 24px;
+            background: transparent;
+            color: #9ca3af;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+
+        .tab-btn:hover {
+            color: #ffd700;
+        }
+
+        .tab-btn.active {
+            color: #ffd700;
+            border-bottom-color: #ffd700;
+        }
+
+        .tab-content {
+            display: none;
+            height: calc(100vh - 115px);
+            padding: 16px;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .tab-content.default-tab {
+            padding: 0;
+        }
+
+        .main-container-tabbed {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            grid-template-rows: 1fr 300px;
+            gap: 16px;
+            height: 100%;
+        }
+
+        .compare-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 16px;
+            max-height: calc(100vh - 180px);
+            overflow-y: auto;
+            padding: 16px;
+        }
+
+        .compare-card {
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+            transition: all 0.3s;
+        }
+
+        .compare-card:hover {
+            border-color: rgba(255, 215, 0, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .compare-card h3 {
+            color: #ffd700;
+            font-size: 16px;
+            margin-bottom: 8px;
+        }
+
+        .compare-card .era-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            background: rgba(255, 215, 0, 0.15);
+            border-radius: 4px;
+            font-size: 11px;
+            color: #ffd700;
+            margin-bottom: 10px;
+        }
+
+        .compare-card .era-tag.modern {
+            background: rgba(59, 130, 246, 0.15);
+            color: #60a5fa;
+        }
+
+        .compare-card .desc {
+            color: #9ca3af;
+            font-size: 12px;
+            line-height: 1.6;
+            margin-bottom: 12px;
+        }
+
+        .compare-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .stat-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px 10px;
+            border-radius: 6px;
+        }
+
+        .stat-label {
+            font-size: 10px;
+            color: #6b7280;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-size: 15px;
+            font-weight: bold;
+            color: #e4e4e7;
+            font-family: 'Consolas', monospace;
+        }
+
+        .stat-value.highlight {
+            color: #ffd700;
+        }
+
+        .power-bar {
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            margin-top: 12px;
+            overflow: hidden;
+        }
+
+        .power-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #f59e0b, #ffd700);
+            border-radius: 4px;
+            transition: width 0.5s;
+        }
+
+        .power-bar-fill.modern {
+            background: linear-gradient(90deg, #3b82f6, #60a5fa);
+        }
+
+        .power-label {
+            font-size: 11px;
+            color: #9ca3af;
+            margin-top: 6px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .barrage-container {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 16px;
+            height: 100%;
+            padding: 16px;
+        }
+
+        .barrage-controls {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+            overflow-y: auto;
+        }
+
+        .barrage-canvas-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+            position: relative;
+            overflow: hidden;
+        }
+
+        #barrage-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .barrage-stats {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 16px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+        }
+
+        .barrage-stats-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .aim-container {
+            display: grid;
+            grid-template-columns: 320px 1fr 320px;
+            gap: 16px;
+            height: 100%;
+            padding: 16px;
+        }
+
+        .aim-panel {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+            overflow-y: auto;
+        }
+
+        .aim-scene-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 215, 0, 0.15);
+            position: relative;
+            overflow: hidden;
+        }
+
+        #aim-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .target-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .target-item {
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .target-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .target-item.selected {
+            border-color: #ffd700;
+            background: rgba(255, 215, 0, 0.1);
+        }
+
+        .target-item .icon {
+            font-size: 24px;
+            margin-right: 8px;
+        }
+
+        .target-item .name {
+            font-weight: bold;
+            color: #e4e4e7;
+        }
+
+        .target-item .info {
+            font-size: 11px;
+            color: #9ca3af;
+            margin-top: 4px;
+        }
+
+        .difficulty-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: bold;
+            margin-left: 6px;
+        }
+
+        .difficulty-easy { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+        .difficulty-medium { background: rgba(234, 179, 8, 0.2); color: #eab308; }
+        .difficulty-hard { background: rgba(249, 115, 22, 0.2); color: #f97316; }
+        .difficulty-expert { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+        .difficulty-legendary { background: rgba(168, 85, 247, 0.2); color: #a855f7; }
+
+        .score-display {
+            background: linear-gradient(135deg, rgba(255, 215, 0, 0.15), rgba(255, 215, 0, 0.05));
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 215, 0, 0.3);
+        }
+
+        .score-value {
+            font-size: 48px;
+            font-weight: bold;
+            color: #ffd700;
+            font-family: 'Consolas', monospace;
+            text-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+        }
+
+        .score-label {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-top: 4px;
+        }
+
+        .aim-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .aim-slider {
+            width: 100%;
+            margin: 8px 0;
+        }
+
+        .aim-readout {
+            font-family: 'Consolas', monospace;
+            font-size: 16px;
+            color: #ffd700;
+            text-align: center;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 8px;
+            border-radius: 6px;
+        }
+
+        .shoot-result {
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 16px;
+            text-align: center;
+        }
+
+        .shoot-result.hit {
+            background: rgba(34, 197, 94, 0.15);
+            border: 1px solid #22c55e;
+        }
+
+        .shoot-result.miss {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid #ef4444;
+        }
+
+        .shoot-result h3 {
+            margin-bottom: 8px;
+            font-size: 18px;
+        }
+
+        .shoot-result.hit h3 { color: #22c55e; }
+        .shoot-result.miss h3 { color: #ef4444; }
+
+        .crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .crosshair::before,
+        .crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 215, 0, 0.7);
+        }
+
+        .crosshair::before {
+            width: 2px;
+            height: 40px;
+            top: -20px;
+            left: -1px;
+        }
+
+        .crosshair::after {
+            width: 40px;
+            height: 2px;
+            top: -1px;
+            left: -20px;
+        }
+
+        .floating-label {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.8;
+            border-left: 3px solid #ffd700;
+        }
+
+        .floating-label h3 {
+            color: #ffd700;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .floating-label.right {
+            left: auto;
+            right: 16px;
+            border-left: none;
+            border-right: 3px solid #ffd700;
+        }
+
+        .armor-mini-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            margin-top: 10px;
+        }
+
+        .armor-mini {
+            padding: 6px;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 11px;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .armor-mini.ok { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
+        .armor-mini.no { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏹 三弓床弩弹射动力学仿真与穿甲威力分析系统</h1>
+        <div class="status">
+            <div class="status-item">
+                <div class="status-dot" id="db-status"></div>
+                <span>数据库</span>
+            </div>
+            <div class="status-item">
+                <div class="status-dot" id="mqtt-status"></div>
+                <span>MQTT</span>
+            </div>
+            <div class="status-item">
+                <div class="status-dot" id="sensor-status"></div>
+                <span>传感器</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-nav">
+        <button class="tab-btn active" data-tab="tab-realtime">📊 实时监控</button>
+        <button class="tab-btn" data-tab="tab-compare">⚔️ 弩机威力对比</button>
+        <button class="tab-btn" data-tab="tab-era">🔫 跨时代对比</button>
+        <button class="tab-btn" data-tab="tab-barrage">🎯 弹幕协同</button>
+        <button class="tab-btn" data-tab="tab-aim">🎮 虚拟操作</button>
+    </div>
+
+    <div class="tab-content default-tab active" id="tab-realtime">
+        <div class="main-container-tabbed">
+            <div class="canvas-panel">
+                <canvas id="three-canvas"></canvas>
+                <div class="canvas-overlay">
+                    <h3>三弓床弩三维模型</h3>
+                    <div>宋代重型床弩，三弓复合结构</div>
+                    <div>最大射程：约 1500 米</div>
+                    <div>箭矢初速：约 100-140 m/s</div>
+                </div>
+                <div class="canvas-controls">
+                    <button class="btn" id="btn-shoot">🏹 模拟发射</button>
+                    <button class="btn btn-secondary" id="btn-reset">重置视角</button>
+                    <button class="btn btn-secondary" id="btn-animate">弓弦演示</button>
+                </div>
+            </div>
+
+            <div class="trajectory-panel">
+                <div class="panel-title">弹道轨迹仿真</div>
+                <canvas id="trajectory-canvas"></canvas>
+            </div>
+
+            <div class="data-panel">
+                <div>
+                    <div class="panel-title">实时传感器数据</div>
+                    <div class="sensor-grid">
+                        <div class="sensor-card">
+                            <div class="sensor-label">弓弦拉力</div>
+                            <div><span class="sensor-value" id="val-tension">0</span><span class="sensor-unit">N</span></div>
+                        </div>
+                        <div class="sensor-card">
+                            <div class="sensor-label">弩臂变形</div>
+                            <div><span class="sensor-value" id="val-deformation">0</span><span class="sensor-unit">mm</span></div>
+                        </div>
+                        <div class="sensor-card">
+                            <div class="sensor-label">箭矢初速</div>
+                            <div><span class="sensor-value" id="val-velocity">0</span><span class="sensor-unit">m/s</span></div>
+                        </div>
+                        <div class="sensor-card">
+                            <div class="sensor-label">穿甲深度</div>
+                            <div><span class="sensor-value" id="val-penetration">0</span><span class="sensor-unit">mm</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="panel-title">仿真参数设置</div>
+                    <div class="form-group">
+                        <label>箭矢初速 (m/s)</label>
+                        <input type="number" id="param-velocity" value="120" min="30" max="200">
+                    </div>
+                    <div class="form-group">
+                        <label>发射角度 (°)</label>
+                        <input type="number" id="param-angle" value="45" min="0" max="89" step="1">
+                    </div>
+                    <div class="form-group">
+                        <label>铠甲类型</label>
+                        <select id="param-armor">
+                            <option value="leather">皮甲</option>
+                            <option value="chainmail">锁子甲</option>
+                            <option value="plate" selected>板甲</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>箭镞类型</label>
+                        <select id="param-arrow">
+                            <option value="bodkin" selected>穿甲箭镞</option>
+                            <option value="broadhead">宽刃箭镞</option>
+                            <option value="blunt">钝头箭镞</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>自旋速率 (Hz)</label>
+                        <input type="number" id="param-spin" value="25" min="0" max="200" step="1">
+                    </div>
+                </div>
+
+                <div>
+                    <div class="panel-title">穿甲威力对比</div>
+                    <div class="armor-compare" id="armor-compare">
+                        <div class="armor-item">
+                            <div class="armor-name">皮甲</div>
+                            <div class="armor-result success" id="armor-leather">--</div>
+                        </div>
+                        <div class="armor-item">
+                            <div class="armor-name">锁子甲</div>
+                            <div class="armor-result" id="armor-chainmail">--</div>
+                        </div>
+                        <div class="armor-item">
+                            <div class="armor-name">板甲</div>
+                            <div class="armor-result fail" id="armor-plate">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="panel-title">告警信息</div>
+                    <div class="alerts-container" id="alerts-container">
+                        <div style="color: #6b7280; font-size: 12px; text-align: center; padding: 20px;">暂无告警</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-compare">
+        <div class="floating-label">
+            <h3>古代弩机威力对比</h3>
+            <div>臂张弩 / 蹶张弩 / 单弓床弩 / 三弓床弩 / 七弓床弩</div>
+            <div>对比射程、动能、穿甲能力、射速等综合指标</div>
+        </div>
+        <div class="compare-grid" id="compare-grid"></div>
+    </div>
+
+    <div class="tab-content" id="tab-era">
+        <div class="floating-label">
+            <h3>跨时代武器对比</h3>
+            <div>古代床弩 vs 现代反器材步枪</div>
+            <div>1000m距离处的动能与穿甲能力对比</div>
+        </div>
+        <div class="compare-grid" id="era-compare-grid"></div>
+    </div>
+
+    <div class="tab-content" id="tab-barrage">
+        <div class="barrage-container">
+            <div class="barrage-controls">
+                <div class="panel-title">弹幕协同参数</div>
+                <div class="form-group">
+                    <label>床弩数量</label>
+                    <select id="barrage-count">
+                        <option value="3">3 床弩（标准小队）</option>
+                        <option value="5" selected>5 床弩（加强小队）</option>
+                        <option value="8">8 床弩（中队）</option>
+                        <option value="12">12 床弩（大队）</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>每弩发射箭矢数</label>
+                    <input type="number" id="barrage-shots" value="3" min="1" max="10">
+                </div>
+                <div class="form-group">
+                    <label>散布角度 (°)</label>
+                    <input type="number" id="barrage-spread" value="10" min="1" max="45">
+                </div>
+                <div class="form-group">
+                    <label>目标区域半径 (m)</label>
+                    <input type="number" id="barrage-radius" value="20" min="5" max="100">
+                </div>
+                <div style="margin-top: 16px;">
+                    <button class="btn" id="btn-barrage-calc" style="width:100%">🎯 计算弹幕覆盖</button>
+                </div>
+                <div class="barrage-stats">
+                    <div class="panel-title" style="border:none; padding:0; margin-bottom:12px;">弹幕统计</div>
+                    <div class="barrage-stats-row">
+                        <div class="stat-item">
+                            <div class="stat-label">总箭矢数</div>
+                            <div class="stat-value" id="stat-total-shots">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">目标命中率</div>
+                            <div class="stat-value highlight" id="stat-hit-rate">0%</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">命中目标数</div>
+                            <div class="stat-value" id="stat-hits">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">覆盖面积</div>
+                            <div class="stat-value" id="stat-area">0 m²</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">到达时间窗</div>
+                            <div class="stat-value" id="stat-time">0 s</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">集中动能</div>
+                            <div class="stat-value highlight" id="stat-ke">0 J</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="barrage-canvas-container">
+                <div class="floating-label">
+                    <h3>弹幕覆盖示意图</h3>
+                    <div>黄色圆点：床弩位置</div>
+                    <div>红色圆圈：目标区域</div>
+                    <div>蓝色/绿色：弹幕命中点</div>
+                </div>
+                <canvas id="barrage-canvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-content" id="tab-aim">
+        <div class="aim-container">
+            <div class="aim-panel">
+                <div class="panel-title">目标列表</div>
+                <div class="target-list" id="target-list"></div>
+            </div>
+            <div class="aim-scene-container">
+                <div class="crosshair"></div>
+                <div class="floating-label">
+                    <h3>瞄准场景</h3>
+                    <div>拖动滑块调整俯仰角和方位角</div>
+                    <div>点击"发射"按钮体验床弩射击</div>
+                </div>
+                <canvas id="aim-canvas"></canvas>
+            </div>
+            <div class="aim-panel">
+                <div class="score-display">
+                    <div class="score-value" id="score-value">0</div>
+                    <div class="score-label">总得分</div>
+                </div>
+                <div class="panel-title">弩机选择</div>
+                <div class="form-group">
+                    <label>弩机类型</label>
+                    <select id="aim-crossbow">
+                        <option value="arm_stretched">臂张弩</option>
+                        <option value="leg_stretched">蹶张弩</option>
+                        <option value="bed_crossbow_single">单弓床弩</option>
+                        <option value="bed_crossbow_triple" selected>三弓床弩</option>
+                        <option value="bed_crossbow_seven">七弓床弩</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>箭镞类型</label>
+                    <select id="aim-arrow">
+                        <option value="bodkin" selected>穿甲箭镞</option>
+                        <option value="broadhead">宽刃箭镞</option>
+                        <option value="blunt">钝头箭镞</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>风速 (m/s)</label>
+                    <input type="number" id="aim-wind-speed" value="0" min="0" max="20" step="0.5">
+                </div>
+                <div class="form-group">
+                    <label>风向 (°)</label>
+                    <input type="number" id="aim-wind-dir" value="0" min="0" max="360">
+                </div>
+                <div class="aim-controls">
+                    <div>
+                        <label style="font-size:12px;color:#9ca3af;">俯仰角 (°)</label>
+                        <input type="range" class="aim-slider" id="aim-elev" min="5" max="85" value="45">
+                        <div class="aim-readout" id="aim-elev-val">45°</div>
+                    </div>
+                    <div>
+                        <label style="font-size:12px;color:#9ca3af;">方位角 (°)</label>
+                        <input type="range" class="aim-slider" id="aim-azi" min="-45" max="45" value="0">
+                        <div class="aim-readout" id="aim-azi-val">0°</div>
+                    </div>
+                </div>
+                <div style="margin-top:16px;">
+                    <button class="btn" id="btn-aim-shoot" style="width:100%;font-size:16px;padding:12px;">🏹 发射！</button>
+                </div>
+                <div id="shoot-result"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="bed_crossbow_3d.js"></script>
+    <script src="power_panel.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
